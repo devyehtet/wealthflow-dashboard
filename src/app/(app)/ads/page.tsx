@@ -1,181 +1,209 @@
-import { prisma } from "@/lib/prisma";
+// src/app/(app)/ads/page.tsx
+"use client";
 
-function ymd(d: Date) {
-  return new Date(d).toISOString().slice(0, 10);
+import { useEffect, useMemo, useState } from "react";
+import MonthBar from "@/components/MonthBar";
+import { useSearchParams } from "next/navigation";
+import { ymNow } from "@/lib/date";
+
+type ApiOk<T> = { ok: true; data: T };
+type ApiErr = { ok: false; error?: any };
+
+type AdSpend = {
+  id: string;
+  date: string; // ISO
+  client?: string | null;
+  page?: string | null;
+  source?: string | null; // optional
+  platform?: string | null;
+  spendUSD: number | string; // prisma Decimal maybe string
+  rate: number | string; // THB rate
+  billedTHB: number | string; // computed or stored
+  note?: string | null;
+  createdAt?: string;
+};
+
+function n(v: unknown): number {
+  // Prisma Decimal can come as string in JSON
+  if (v === null || v === undefined) return 0;
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  const s = String(v).trim();
+  const num = Number(s);
+  return Number.isFinite(num) ? num : 0;
 }
-function fmt2(n: number) {
-  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function fmt2(v: unknown) {
+  return n(v).toFixed(2);
 }
 
-export default async function AdsPage() {
-  const [clients, sources, spends] = await Promise.all([
-    prisma.client.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
-    prisma.adSource.findMany({
-      include: { client: true },
-      orderBy: { createdAt: "desc" },
-      take: 200,
-    }),
-    prisma.adSpend.findMany({
-      include: { client: true, source: true },
-      orderBy: { date: "desc" },
-      take: 30,
-    }),
-  ]);
+function dShort(iso: string) {
+  // yyyy-mm-dd
+  try {
+    return new Date(iso).toISOString().slice(0, 10);
+  } catch {
+    return iso?.slice(0, 10) ?? "";
+  }
+}
 
-  const totalBilled = spends.reduce((s, x) => s + Number(x.billedAmount), 0);
+export default function AdsPage() {
+  const sp = useSearchParams();
+  const month = sp.get("month") ?? ymNow();
+
+  // ✅ If your API path is different, change here:
+  const API_URL = `/api/adspend?month=${encodeURIComponent(month)}`;
+
+  const [loading, setLoading] = useState(false);
+  const [spends, setSpends] = useState<AdSpend[]>([]);
+  const [err, setErr] = useState<string>("");
+
+  async function load() {
+    setLoading(true);
+    setErr("");
+    try {
+      const res = await fetch(API_URL, { cache: "no-store" });
+      const text = await res.text(); // protect against empty JSON
+      const json = (text ? JSON.parse(text) : null) as ApiOk<AdSpend[]> | ApiErr | null;
+
+      if (!json || (json as ApiErr).ok === false) {
+        setSpends([]);
+        setErr(JSON.stringify((json as ApiErr)?.error ?? json ?? { error: "No response" }));
+        return;
+      }
+
+      setSpends((json as ApiOk<AdSpend[]>).data ?? []);
+    } catch (e: any) {
+      setSpends([]);
+      setErr(e?.message ?? String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [month]);
+
+  // ✅ FIX: no implicit any + safer totals
+  const totals = useMemo(() => {
+    const totalUSD = spends.reduce<number>((sum, x) => sum + n(x.spendUSD), 0);
+    const totalTHB = spends.reduce<number>((sum, x) => sum + n(x.billedTHB), 0);
+    const avgRate = totalUSD > 0 ? totalTHB / totalUSD : 0;
+    return { totalUSD, totalTHB, avgRate };
+  }, [spends]);
 
   return (
     <div className="space-y-6">
-      <div className="rounded-3xl border border-zinc-200 bg-white/80 p-6 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+      {/* Header */}
+      <div className="rounded-3xl border border-white/10 bg-black/40 p-6 backdrop-blur">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <div className="text-xs text-zinc-500 dark:text-zinc-400">Business</div>
-            <h1 className="text-2xl font-semibold">Ads Finance (Multi-Platform)</h1>
-            <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-              Facebook / Google / TikTok / Viber / Consulting → USD → THB billed + client invoices.
-            </p>
+            <div className="text-sm text-white/60">WealthFlow</div>
+            <div className="text-3xl font-semibold text-white">Ads Finance</div>
+            <div className="text-sm text-white/60">
+              Track USD spend → THB billed (Facebook / Google / TikTok / Viber / Consulting)
+            </div>
           </div>
-          <div className="rounded-2xl border border-zinc-200 bg-white/70 px-4 py-3 text-sm font-semibold dark:border-white/10 dark:bg-white/5">
-            Recent billed: {fmt2(totalBilled)} THB
+          <MonthBar label="Month" />
+        </div>
+
+        <div className="mt-4 grid gap-3 lg:grid-cols-3">
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+            <div className="text-sm text-white/60">Total Spend (USD)</div>
+            <div className="mt-1 text-3xl font-semibold text-white">{totals.totalUSD.toFixed(2)}</div>
+            <div className="mt-1 text-xs text-white/50">This month</div>
+          </div>
+
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+            <div className="text-sm text-white/60">Total Billed (THB)</div>
+            <div className="mt-1 text-3xl font-semibold text-white">{totals.totalTHB.toFixed(2)}</div>
+            <div className="mt-1 text-xs text-white/50">USD × rate (sum)</div>
+          </div>
+
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+            <div className="text-sm text-white/60">Avg Rate</div>
+            <div className="mt-1 text-3xl font-semibold text-white">{totals.avgRate.toFixed(4)}</div>
+            <div className="mt-1 text-xs text-white/50">TotalTHB / TotalUSD</div>
           </div>
         </div>
 
-        {/* Create Client */}
-        <div className="mt-6 grid gap-4 lg:grid-cols-2">
-          <div className="rounded-2xl border border-zinc-200 bg-white/70 p-4 dark:border-white/10 dark:bg-white/5">
-            <div className="font-semibold">Add Client</div>
-            <form action="/api/clients" method="POST" className="mt-3 grid gap-3 md:grid-cols-2">
-              <input name="name" placeholder="Client name" className="rounded-xl border p-3 md:col-span-2" required />
-              <input name="feePercent" type="number" step="0.01" placeholder="Manage fee % (e.g. 15)" className="rounded-xl border p-3" />
-              <select name="feeType" className="rounded-xl border p-3" defaultValue="PERCENT_OF_SPEND">
-                <option value="PERCENT_OF_SPEND">Percent of spend</option>
-                <option value="FIXED_MONTHLY">Fixed monthly</option>
-                <option value="HYBRID">Hybrid</option>
-              </select>
-              <input name="fixedMonthlyTHB" type="number" step="0.01" placeholder="Fixed monthly THB" className="rounded-xl border p-3" />
-              <select name="invoiceCurrency" className="rounded-xl border p-3" defaultValue="THB">
-                <option value="THB">THB</option>
-                <option value="USD">USD</option>
-                <option value="MMK">MMK</option>
-              </select>
-              <button className="rounded-xl bg-zinc-900 px-4 py-3 text-sm font-semibold text-white hover:opacity-90 dark:bg-white dark:text-black md:col-span-2">
-                Create Client
-              </button>
-            </form>
+        {err ? (
+          <div className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">
+            <div className="font-semibold">API Error</div>
+            <div className="mt-1 break-all text-xs text-red-200/80">{err}</div>
           </div>
-
-          {/* Create Source */}
-          <div className="rounded-2xl border border-zinc-200 bg-white/70 p-4 dark:border-white/10 dark:bg-white/5">
-            <div className="font-semibold">Add Page / Ad Account</div>
-            <form action="/api/sources" method="POST" className="mt-3 grid gap-3 md:grid-cols-2">
-              <select name="clientId" className="rounded-xl border p-3 md:col-span-2" required>
-                <option value="">Select client</option>
-                {clients.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-              <select name="type" className="rounded-xl border p-3" defaultValue="PAGE">
-                <option value="PAGE">PAGE</option>
-                <option value="AD_ACCOUNT">AD_ACCOUNT</option>
-              </select>
-              <input name="name" placeholder="Page / Ad account name" className="rounded-xl border p-3" required />
-              <input name="sourceId" placeholder="Page ID (optional)" className="rounded-xl border p-3" />
-              <input name="note" placeholder="Note (optional)" className="rounded-xl border p-3" />
-              <button className="rounded-xl bg-zinc-900 px-4 py-3 text-sm font-semibold text-white hover:opacity-90 dark:bg-white dark:text-black md:col-span-2">
-                Add Source
-              </button>
-            </form>
-          </div>
-        </div>
-
-        {/* Add Spend */}
-        <div className="mt-6 rounded-2xl border border-zinc-200 bg-white/70 p-4 dark:border-white/10 dark:bg-white/5">
-          <div className="font-semibold">Add Spend (Any Platform → THB billed)</div>
-          <form action="/api/adspend" method="POST" className="mt-3 grid gap-3 md:grid-cols-9">
-            <input name="date" type="date" className="rounded-xl border p-3 md:col-span-2" required />
-
-            <select name="platform" className="rounded-xl border p-3 md:col-span-2" defaultValue="FACEBOOK">
-              <option value="FACEBOOK">Facebook Ads</option>
-              <option value="GOOGLE">Google Ads</option>
-              <option value="TIKTOK">TikTok Ads</option>
-              <option value="VIBER">Viber Ads</option>
-              <option value="CONSULTING">Consulting</option>
-              <option value="OTHER">Other</option>
-            </select>
-
-            <select name="clientId" className="rounded-xl border p-3 md:col-span-3" required>
-              <option value="">Client</option>
-              {clients.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-
-            <select name="sourceId" className="rounded-xl border p-3 md:col-span-2">
-              <option value="">Page/Source (optional)</option>
-              {sources.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.client.name} • {s.name}
-                </option>
-              ))}
-            </select>
-
-            <input name="spendAmount" type="number" step="0.01" placeholder="Spend USD" className="rounded-xl border p-3 md:col-span-2" required />
-            <input name="rateUsed" type="number" step="0.0001" placeholder="USD→THB rate" className="rounded-xl border p-3 md:col-span-2" required />
-
-            <input name="note" placeholder="Note (optional)" className="rounded-xl border p-3 md:col-span-5" />
-            <button className="rounded-xl bg-zinc-900 px-4 py-3 text-sm font-semibold text-white hover:opacity-90 dark:bg-white dark:text-black md:col-span-4">
-              Save Spend
-            </button>
-          </form>
-
-          <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-            billedTHB = spendUSD × rateUsed. (Server calculates.)
-          </p>
-        </div>
+        ) : null}
       </div>
 
-      {/* Recent spends table */}
-      <div className="rounded-3xl border border-zinc-200 bg-white/80 p-6 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5">
-        <div className="text-base font-semibold">Recent Spends</div>
+      {/* Table */}
+      <div className="rounded-3xl border border-white/10 bg-black/40 p-6 backdrop-blur">
+        <div className="flex items-center justify-between">
+          <div className="font-semibold text-white">Ad Spend Records ({month})</div>
+          <button
+            onClick={load}
+            disabled={loading}
+            className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10 disabled:opacity-60"
+          >
+            {loading ? "Loading..." : "Refresh"}
+          </button>
+        </div>
 
-        <div className="mt-4 overflow-auto rounded-2xl border border-zinc-200/70 dark:border-white/10">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-zinc-50 text-left text-xs font-semibold text-zinc-500 dark:bg-white/5 dark:text-zinc-400">
-                <th className="px-3 py-2">Date</th>
-                <th className="px-3 py-2">Platform</th>
-                <th className="px-3 py-2">Client</th>
-                <th className="px-3 py-2">Source</th>
-                <th className="px-3 py-2 text-right">USD</th>
-                <th className="px-3 py-2 text-right">Rate</th>
-                <th className="px-3 py-2 text-right">THB</th>
+        <div className="mt-4 overflow-x-auto">
+          <table className="min-w-full text-left text-sm">
+            <thead className="text-xs text-white/60">
+              <tr className="border-b border-white/10">
+                <th className="py-3 pr-4">Date</th>
+                <th className="py-3 pr-4">Client</th>
+                <th className="py-3 pr-4">Page</th>
+                <th className="py-3 pr-4">Platform</th>
+                <th className="py-3 pr-4">Spend (USD)</th>
+                <th className="py-3 pr-4">Rate</th>
+                <th className="py-3 pr-4">Billed (THB)</th>
+                <th className="py-3 pr-0">Note</th>
               </tr>
             </thead>
-            <tbody>
-              {spends.map((x) => (
-                <tr key={x.id} className="border-t border-zinc-200/70 dark:border-white/10">
-                  <td className="px-3 py-2">{ymd(x.date)}</td>
-                  <td className="px-3 py-2 font-medium">{x.platform}</td>
-                  <td className="px-3 py-2">{x.client.name}</td>
-                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-400">{x.source?.name ?? "-"}</td>
-                  <td className="px-3 py-2 text-right">{fmt2(Number(x.spendAmount))}</td>
-                  <td className="px-3 py-2 text-right">{Number(x.rateUsed).toFixed(4)}</td>
-                  <td className="px-3 py-2 text-right font-semibold">{fmt2(Number(x.billedAmount))}</td>
-                </tr>
-              ))}
-              {spends.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-3 py-6 text-center text-zinc-500">
-                    No spends yet.
+
+            <tbody className="text-white">
+              {spends.length === 0 ? (
+                <tr className="border-b border-white/5">
+                  <td colSpan={8} className="py-10 text-center text-white/50">
+                    No ad spend records for this month.
                   </td>
                 </tr>
+              ) : (
+                spends.map((x) => (
+                  <tr key={x.id} className="border-b border-white/5 hover:bg-white/5">
+                    <td className="py-3 pr-4 whitespace-nowrap">{dShort(x.date)}</td>
+                    <td className="py-3 pr-4">{x.client ?? "-"}</td>
+                    <td className="py-3 pr-4">{x.page ?? "-"}</td>
+                    <td className="py-3 pr-4">{x.platform ?? "-"}</td>
+                    <td className="py-3 pr-4 tabular-nums">{fmt2(x.spendUSD)}</td>
+                    <td className="py-3 pr-4 tabular-nums">{fmt2(x.rate)}</td>
+                    <td className="py-3 pr-4 tabular-nums font-semibold">{fmt2(x.billedTHB)}</td>
+                    <td className="py-3 pr-0 text-white/70">{x.note ?? ""}</td>
+                  </tr>
+                ))
               )}
             </tbody>
+
+            {spends.length > 0 ? (
+              <tfoot>
+                <tr className="border-t border-white/10">
+                  <td className="py-3 pr-4 text-white/60" colSpan={4}>
+                    Total
+                  </td>
+                  <td className="py-3 pr-4 tabular-nums font-semibold">{totals.totalUSD.toFixed(2)}</td>
+                  <td className="py-3 pr-4 text-white/60 tabular-nums">{totals.avgRate.toFixed(4)}</td>
+                  <td className="py-3 pr-4 tabular-nums font-semibold">{totals.totalTHB.toFixed(2)}</td>
+                  <td className="py-3 pr-0" />
+                </tr>
+              </tfoot>
+            ) : null}
           </table>
+        </div>
+
+        <div className="mt-3 text-xs text-white/50">
+          Tip: If Prisma returns Decimal as string, this page safely converts it using Number().
         </div>
       </div>
     </div>
