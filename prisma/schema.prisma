@@ -1,0 +1,251 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Currency {
+  THB
+  USD
+  MMK
+}
+
+enum AdPlatform {
+  FACEBOOK
+  GOOGLE
+  TIKTOK
+  VIBER
+  CONSULTING
+  OTHER
+}
+
+enum FeeType {
+  PERCENT_OF_SPEND
+  FIXED_MONTHLY
+  HYBRID
+}
+
+enum PaymentStatus {
+  UNPAID
+  PARTIAL
+  PAID
+}
+
+model Client {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  feeType   String   @default("PERCENT") // PERCENT | FIXED | HYBRID
+  feePercent Decimal? @db.Decimal(10,2)
+  feeFixedTHB Decimal? @db.Decimal(18,2)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  adSpends  AdSpend[]
+  invoices  ClientInvoice[]
+}
+
+
+model AdSource {
+  id       String @id @default(cuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  type     String  @default("PAGE") // PAGE | AD_ACCOUNT
+  name     String
+  sourceId String?
+  note     String?
+
+  spends AdSpend[]
+
+  createdAt DateTime @default(now())
+
+  @@index([clientId, name])
+}
+
+model ExchangeRate {
+  id   String   @id @default(cuid())
+  date DateTime
+  from Currency
+  to   Currency
+  rate Decimal  @db.Decimal(18, 6)
+  note String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([date, from, to])
+}
+
+model AdSpend {
+  id           String   @id @default(cuid())
+  userId       String
+  date         DateTime
+  clientId     String
+  client       Client   @relation(fields: [clientId], references: [id])
+
+  platform     String   // Facebook | Google | TikTok | Viber | Consulting | Other
+  sourceId     String?
+  spendCurrency String  @default("USD")
+  spendAmount  Decimal  @db.Decimal(18,2)
+  rateUsed     Decimal  @db.Decimal(18,6)
+  billedAmount Decimal  @db.Decimal(18,2) // THB
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+
+model ClientInvoice {
+  id          String   @id @default(cuid())
+  userId      String
+  clientId    String
+  client      Client   @relation(fields: [clientId], references: [id])
+
+  month       String   // "YYYY-MM" snapshot
+  periodStart DateTime
+  periodEnd   DateTime
+
+  spendTHB    Decimal  @db.Decimal(18,2)
+  feeTHB      Decimal  @db.Decimal(18,2)
+  totalTHB    Decimal  @db.Decimal(18,2)
+
+  status      String   @default("UNPAID") // UNPAID | PARTIAL | PAID
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  payments    InvoicePayment[]
+}
+
+model InvoicePayment {
+  id        String   @id @default(cuid())
+  userId    String
+  invoiceId String
+  invoice   ClientInvoice @relation(fields: [invoiceId], references: [id])
+
+  date      DateTime
+  amountTHB Decimal  @db.Decimal(18,2)
+  method    String?  // Bank, Cash, Transfer...
+  note      String?
+
+  createdAt DateTime @default(now())
+}
+
+model ClientPayment {
+  id        String        @id @default(cuid())
+  invoiceId String
+  invoice   ClientInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  date      DateTime
+  amountTHB Decimal  @db.Decimal(18, 2)
+  method    String?
+  note      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([invoiceId, date])
+}
+
+model Expense {
+  id          String   @id @default(cuid())
+  date        DateTime
+  category    String // Grab, 7/11, Fruit, Kids, Food, Other...
+  description String?
+  amountTHB   Decimal  @db.Decimal(18, 2)
+  method      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([date, category])
+}
+
+model Income {
+  id          String   @id @default(cuid())
+  date        DateTime
+  type        String // "Facebook Ads Service", "Training", "Other"
+  description String?
+  currency    Currency
+  amount      Decimal  @db.Decimal(18, 2)
+
+  exchangeRate Decimal? @db.Decimal(18, 6) // if not THB
+  amountTHB    Decimal  @db.Decimal(18, 2) // normalized
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([date, type])
+}
+
+model Course {
+  id          String   @id @default(cuid())
+  title       String
+  batch       String // e.g. "Batch 1", "Week 3"
+  feeCurrency Currency @default(MMK)
+  feeAmount   Decimal  @db.Decimal(18, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  enrollments Enrollment[]
+}
+
+model Student {
+  id         String  @id @default(cuid())
+  name       String
+  email      String?
+  viberPhone String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  enrollments Enrollment[]
+}
+
+model Enrollment {
+  id        String @id @default(cuid())
+  studentId String
+  courseId  String
+
+  totalCurrency Currency
+  totalAmount   Decimal  @db.Decimal(18, 2)
+  totalTHB      Decimal  @db.Decimal(18, 2)
+
+  status PaymentStatus @default(UNPAID)
+
+  student  Student          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  course   Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  payments StudentPayment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([studentId])
+  @@index([courseId])
+}
+
+model StudentPayment {
+  id           String     @id @default(cuid())
+  enrollmentId String
+  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+
+  date     DateTime
+  currency Currency
+  amount   Decimal  @db.Decimal(18, 2)
+
+  exchangeRate Decimal? @db.Decimal(18, 6) // to THB
+  amountTHB    Decimal  @db.Decimal(18, 2)
+
+  method String?
+  note   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([enrollmentId, date])
+}
